@@ -1,9 +1,53 @@
-sudo: false
 language: rust
-rust:
-- stable
-- beta
-- nightly
+notifications:
+  email:
+    on_success: never
+addons:
+  apt:
+    packages:
+      - pkg-config
+os: linux
+
+jobs:
+  include:
+    - name: xenial-stable-conda-1.10.4
+      dist: xenial
+      rust: 1.37.0
+      env:
+        - H5_CONDA=1.10.4
+    - name: xenial-beta-apt-1.8.13
+      dist: xenial
+      rust: beta
+      addons:
+        apt:
+          packages:
+            - libhdf5-dev
+      env:
+        - HDF5_VERSION=1.8.16
+    - name: trusty-nightly-apt-1.8.11
+      dist: trusty
+      rust: nightly
+      addons:
+        apt:
+          packages:
+            - libhdf5-serial-dev
+    - name: macos-stable-brew-1.8.*
+      os: osx
+      rust: stable
+      env:
+        - H5_BREW=1.8
+    - name: macos-beta-brew-1.10.*
+      os: osx
+      rust: beta
+      env:
+        - H5_BREW=1.10
+    - name: macos-nightly-conda-1.8.9
+      os: osx
+      rust: nightly
+      env:
+        - H5_CONDA=1.8.9
+        - HDF5_VERSION=1.8.9
+
 before_script:
 - |
   if [ $TRAVIS_RUST_VERSION = "nightly" ]; then
@@ -18,41 +62,55 @@ script:
     fi
   fi
 - cargo clean
-- cargo test -v -p hdf5-derive
-- cargo clean
-- cargo build -v
-- cargo test -v --no-run --all --exclude hdf5-derive
-- cargo test -v --all --exclude hdf5-derive
-- |
-  if [ $TRAVIS_RUST_VERSION = "stable" ] && [ `uname` = "Linux" ]; then
-    cargo doc --no-deps;
-  fi
-addons:
-  apt:
-    packages:
-    - libhdf5-serial-dev
-    - pkg-config
-notifications:
-  email:
-    on_success: never
-os:
-- linux
-- osx
+- cargo build -vv
+- cargo test -v --all
 before_install:
-- if [ `uname` = "Darwin" ]; then
-    brew update >/dev/null;
-    brew tap homebrew/science;
-    brew install hdf5;
+- |
+  if [ `uname` = "Darwin" ] && [ ! -z "$H5_BREW" ]; then
+    brew update >/dev/null || true;
+    brew remove --ignore-dependencies hdf5 || true;
+    brew install hdf5@${H5_BREW} || true;
+    true
   fi
-after_success: |
-  [ $TRAVIS_BRANCH = "master" ] &&
-  [ $TRAVIS_PULL_REQUEST = "false" ] &&
-  [ $TRAVIS_RUST_VERSION = "stable" ] &&
-  [ `uname` = "Linux" ] &&
-  echo '<meta http-equiv=refresh content=0;url=hdf5_rs/index.html>' > target/doc/index.html &&
-  pip install ghp-import --user $USER &&
-  $HOME/.local/bin/ghp-import -n target/doc &&
-  git push -qf https://${TOKEN}@github.com/${TRAVIS_REPO_SLUG}.git gh-pages
-env:
-  global:
-    secure: Vk/tN3N2gb2TnFcXEJDuBbJ7ydNNig9p9QSgXc9rCubZ1EzPry1vFshAijwmqSa+Zy9vE6B+00VPIsBgTOofMYK/tQARtdZq76lBy0g1wRKXySMMWsvu/XL+IjmGQuVCOFSDUrH3OgVXn7dw5jrwfVNoz8smwyvvdebCZDbPL+yYzFTv7hBfL9xRkxlpM5BI1F2FGCC2IfyOrMMZbcjJu1duQnP5fs0K0AWQEa0fsO12u/dh/RH3ioWkwUlSMojms90VKjmYNlGjVI5vkMoni8pYrVggEFmQnGxShTPsPTg1vJH6SRnMpTiRMzcyyH5zMiLyWPfLWT2QR29d8ngmm7LWfxGlnDouPLgBzG7Hvys+EnXEHTPiFaVpyNje6C9mLaMxloRN1nU7zsBsd5YOWn9PunVn82wL4IybDmCJg1lfGVDLy+IGm0qO3Q1im/7G6TcHy4DgQ0Zf02PjKcelBjvBIE05IwZwcXO7Da0guBzGiFOzdEn/PWejkDmxDRgeh3CRu9i5XBjGHmYjo1A9z8kusq1IS+vU/thRRDE159hq942HQN6xtpcKi9CzORIw8tErM6HHIhomYiXvgwIrI/FwNH5c2qEakAISw1lfcVnSTsbDah4NghAvCXfd6YN+UE/JKlrsd3fQX8L6ZM3kfTVQBWt1BlhFQ753V/Y0ZI8=
+- |
+  if [ ! -z "$H5_CONDA" ]; then
+    if [ `uname` = "Darwin" ]; then
+      wget https://repo.continuum.io/miniconda/Miniconda3-latest-MacOSX-x86_64.sh -O miniconda.sh;
+      # note: this is only required for older HDF5 installations on OS X
+      export DYLD_FALLBACK_LIBRARY_PATH="$HOME/miniconda/envs/testenv/lib";
+    else
+      wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh;
+    fi
+    bash miniconda.sh -b -p $HOME/miniconda;
+    export PATH="$HOME/miniconda/bin:$PATH";
+    hash -r;
+    conda config --set always_yes yes --set changeps1 no;
+    conda info -a;
+    conda create -q -n testenv -c anaconda hdf5=${H5_CONDA};
+    export HDF5_DIR="$HOME/miniconda/envs/testenv";
+    export RUSTFLAGS="-C link-args=-Wl,-rpath,$HOME/miniconda/envs/testenv/lib";
+  fi
+- |
+  if [ $TRAVIS_OS_NAME = "linux" ]; then
+    pkg-config hdf5 --modversion || true;
+  fi
+- find /usr -name '*hdf5*' || true
+- find /usr -name 'H5*.h' || true
+
+cache:
+  directories:
+    - /home/travis/.cargo
+before_cache:
+  - rm -rf /home/travis/.cargo/registry
+
+before_deploy:
+  - cargo doc --no-deps
+  - echo '<meta http-equiv=refresh content=0;url=hdf5/index.html>' > target/doc/index.html
+deploy:
+  provider: pages
+  cleanup: true
+  token: $GITHUB_TOKEN
+  local_dir: target/doc
+  on:
+    branch: master
+    condition: "$TRAVIS_RUST_VERSION = stable && $TRAVIS_OS_NAME = linux"
