@@ -1,17 +1,22 @@
 [package]
 name = "hdf5-derive"
-version = "0.2.0"
+version = "0.6.0"  # !V
 authors = ["Ivan Smirnov <i.s.smirnov@gmail.com>"]
+keywords = ["hdf5"]
+license = "MIT/Apache-2.0"
+description = "Derive macro for HDF5 structs and enums."
+repository = "https://github.com/aldanor/hdf5-rust"
+homepage = "https://github.com/aldanor/hdf5-rust"
 edition = "2018"
 
 [lib]
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "0.4"
-quote = "0.6"
-syn = { version = "0.15", features = ["derive", "extra-traits"]}
-hdf5-types = { path = "../hdf5-types", version = "0.2.0" }
+proc-macro2 = "1.0"
+quote = "^1.0.2"
+syn = { version = "^1.0.5", features = ["derive", "extra-traits"]}
 
 [dev-dependencies]
-compiletest_rs = { version = "0.3.18", features = ["stable"] }
+trybuild = "1.0"
+hdf5 = { version = ">=0.5", path = ".." }

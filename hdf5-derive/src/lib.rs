@@ -9,8 +9,8 @@ use std::str::FromStr;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
-    parse_macro_input, AttrStyle, Attribute, Data, DeriveInput, Expr, Fields, Meta, NestedMeta,
-    Type, TypeGenerics, TypePath,
+    parse_macro_input, AttrStyle, Attribute, Data, DeriveInput, Expr, Fields, Index, Meta,
+    NestedMeta, Type, TypeGenerics, TypePath,
 };
 
 #[proc_macro_derive(H5Type)]
@@ -23,10 +23,12 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let expanded = quote! {
         #[allow(dead_code, unused_variables, unused_attributes)]
         const #dummy: () = {
+            extern crate hdf5 as _h5;
+
             #[automatically_derived]
-            unsafe impl #impl_generics ::hdf5_types::H5Type for #name #ty_generics #where_clause {
+            unsafe impl #impl_generics _h5::types::H5Type for #name #ty_generics #where_clause {
                 #[inline]
-                fn type_descriptor() -> ::hdf5_types::TypeDescriptor {
+                fn type_descriptor() -> _h5::types::TypeDescriptor {
                     #body
                 }
             }
@@ -44,9 +46,9 @@ where
     quote! {
         let origin: *const #ty #ty_generics = ::std::ptr::null();
         let mut fields = vec![#(
-            ::hdf5_types::CompoundField {
+            _h5::types::CompoundField {
                 name: #names.to_owned(),
-                ty: <#types as ::hdf5_types::H5Type>::type_descriptor(),
+                ty: <#types as _h5::types::H5Type>::type_descriptor(),
                 offset: unsafe { &((*origin).#fields) as *const _ as _ },
                 index: 0,
             }
@@ -55,7 +57,7 @@ where
             fields[i].index = i;
         }
         let size = ::std::mem::size_of::<#ty #ty_generics>();
-        ::hdf5_types::TypeDescriptor::Compound(::hdf5_types::CompoundType { fields, size })
+        _h5::types::TypeDescriptor::Compound(_h5::types::CompoundType { fields, size })
     }
 }
 
@@ -70,12 +72,12 @@ fn impl_enum(names: Vec<Ident>, values: Vec<Expr>, repr: &Ident) -> TokenStream 
     let signed = repr.to_string().starts_with('i');
     let repr = iter::repeat(repr);
     quote! {
-        ::hdf5_types::TypeDescriptor::Enum(
-            ::hdf5_types::EnumType {
-                size: ::hdf5_types::IntSize::#size,
+        _h5::types::TypeDescriptor::Enum(
+            _h5::types::EnumType {
+                size: _h5::types::IntSize::#size,
                 signed: #signed,
                 members: vec![#(
-                    ::hdf5_types::EnumMember {
+                    _h5::types::EnumMember {
                         name: stringify!(#names).to_owned(),
                         value: (#values) as #repr as _,
                     }
@@ -96,17 +98,27 @@ fn is_phantom_data(ty: &Type) -> bool {
 
 fn find_repr(attrs: &[Attribute], expected: &[&str]) -> Option<Ident> {
     for attr in attrs.iter() {
-        if attr.style == AttrStyle::Outer {
-            if let Ok(Meta::List(ref list)) = attr.parse_meta() {
-                if list.ident == "repr" {
-                    for item in list.nested.iter() {
-                        if let NestedMeta::Meta(Meta::Word(ref ident)) = *item {
-                            if expected.iter().any(|&s| *ident == s) {
-                                return Some(Ident::new(&ident.to_string(), Span::call_site()));
-                            }
-                        }
-                    }
-                }
+        if attr.style != AttrStyle::Outer {
+            continue;
+        }
+        let list = match attr.parse_meta() {
+            Ok(Meta::List(list)) => list,
+            _ => continue,
+        };
+        if !list.path.get_ident().map_or(false, |ident| ident == "repr") {
+            continue;
+        }
+        for item in list.nested.iter() {
+            let path = match item {
+                NestedMeta::Meta(Meta::Path(ref path)) => path,
+                _ => continue,
+            };
+            let ident = match path.get_ident() {
+                Some(ident) => ident,
+                _ => continue,
+            };
+            if expected.iter().any(|&s| ident == s) {
+                return Some(Ident::new(&ident.to_string(), Span::call_site()));
             }
         }
     }
@@ -144,11 +156,12 @@ fn impl_trait(
                 impl_compound(ty, ty_generics, &fields, &names, &types)
             }
             Fields::Unnamed(ref fields) => {
-                let (index, fields): (Vec<usize>, Vec<_>) = fields
+                let (index, fields): (Vec<Index>, Vec<_>) = fields
                     .unnamed
                     .iter()
                     .enumerate()
                     .filter(|&(_, f)| !is_phantom_data(&f.ty))
+                    .map(|(i, f)| (Index::from(i), f))
                     .unzip();
                 if fields.is_empty() {
                     panic!("Cannot derive H5Type for empty tuple structs");

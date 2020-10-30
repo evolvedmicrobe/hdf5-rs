@@ -1,16 +1,48 @@
 use std::borrow::{Borrow, Cow};
+use std::error::Error as StdError;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem;
 use std::ops::{Deref, Index, RangeFull};
 use std::ptr;
-use std::slice;
+use std::slice::{self, SliceIndex};
 use std::str::{self, FromStr};
 
 use ascii::{AsAsciiStr, AsAsciiStrError, AsciiStr};
 
 use crate::array::Array;
-use crate::errors::Result;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StringError {
+    InternalNull,
+    InsufficientCapacity,
+    AsciiError(AsAsciiStrError),
+    #[doc(hidden)]
+    __Incomplete,
+}
+
+impl From<AsAsciiStrError> for StringError {
+    fn from(err: AsAsciiStrError) -> Self {
+        StringError::AsciiError(err)
+    }
+}
+
+impl StdError for StringError {}
+
+impl fmt::Display for StringError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            StringError::InternalNull => {
+                write!(f, "string error: variable length string with internal null")
+            }
+            StringError::InsufficientCapacity => {
+                write!(f, "string error: insufficient capacity for fixed sized string")
+            }
+            StringError::AsciiError(err) => write!(f, "string error: {}", err),
+            _ => write!(f, ""),
+        }
+    }
+}
 
 // ================================================================================
 
@@ -221,12 +253,10 @@ impl VarLenAscii {
         Self::from_bytes(bytes.as_ref())
     }
 
-    pub fn from_ascii<B: ?Sized + AsRef<[u8]>>(bytes: &B) -> Result<Self> {
+    pub fn from_ascii<B: ?Sized + AsRef<[u8]>>(bytes: &B) -> Result<Self, StringError> {
         let bytes = bytes.as_ref();
         if !bytes.iter().all(|&c| c != 0) {
-            bail!("Variable length ASCII string with internal null: {:?}", unsafe {
-                str::from_utf8_unchecked(bytes)
-            });
+            return Err(StringError::InternalNull);
         }
         let s = AsciiStr::from_ascii(bytes)?;
         unsafe { Ok(Self::from_bytes(s.as_bytes())) }
@@ -234,13 +264,24 @@ impl VarLenAscii {
 }
 
 impl AsAsciiStr for VarLenAscii {
+    type Inner = u8;
+
+    #[inline]
+    fn slice_ascii<R>(&self, range: R) -> Result<&AsciiStr, AsAsciiStrError>
+    where
+        R: SliceIndex<[u8], Output = [u8]>,
+    {
+        self.as_bytes().slice_ascii(range)
+    }
+
+    #[inline]
+    fn as_ascii_str(&self) -> Result<&AsciiStr, AsAsciiStrError> {
+        AsciiStr::from_ascii(self.as_bytes())
+    }
+
     #[inline]
     unsafe fn as_ascii_str_unchecked(&self) -> &AsciiStr {
         AsciiStr::from_ascii_unchecked(self.as_bytes())
-    }
-
-    fn as_ascii_str(&self) -> ::std::result::Result<&AsciiStr, AsAsciiStrError> {
-        AsciiStr::from_ascii(self.as_bytes())
     }
 }
 
@@ -322,11 +363,14 @@ impl VarLenUnicode {
 }
 
 impl FromStr for VarLenUnicode {
-    type Err = crate::errors::Error;
+    type Err = StringError;
 
-    fn from_str(s: &str) -> Result<Self> {
-        ensure!(s.chars().all(|c| c != '\0'), "Variable length unicode string with internal null");
-        unsafe { Ok(Self::from_bytes(s.as_bytes())) }
+    fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
+        if s.chars().all(|c| c != '\0') {
+            unsafe { Ok(Self::from_bytes(s.as_bytes())) }
+        } else {
+            Err(StringError::InternalNull)
+        }
     }
 }
 
@@ -342,9 +386,9 @@ impl<A: Array<Item = u8>> Clone for FixedAscii<A> {
     #[inline]
     fn clone(&self) -> Self {
         unsafe {
-            let mut buf: A = mem::uninitialized();
-            ptr::copy_nonoverlapping(self.buf.as_ptr(), buf.as_mut_ptr(), A::capacity());
-            FixedAscii { buf }
+            let mut buf = mem::MaybeUninit::<A>::uninit();
+            ptr::copy_nonoverlapping(self.buf.as_ptr(), buf.as_mut_ptr() as *mut _, A::capacity());
+            FixedAscii { buf: buf.assume_init() }
         }
     }
 }
@@ -403,24 +447,35 @@ impl<A: Array<Item = u8>> FixedAscii<A> {
         Self::from_bytes(bytes.as_ref())
     }
 
-    pub fn from_ascii<B: ?Sized + AsRef<[u8]>>(bytes: &B) -> Result<Self> {
+    pub fn from_ascii<B: ?Sized + AsRef<[u8]>>(bytes: &B) -> Result<Self, StringError> {
         let bytes = bytes.as_ref();
-        ensure!(bytes.len() <= A::capacity(), "Insufficient capacity for fixed-size ASCII string");
-        let s = AsciiStr::from_ascii(bytes).map_err(|_| {
-            format!("Invalid ASCII string: `{}`", unsafe { str::from_utf8_unchecked(bytes) })
-        })?;
+        if bytes.len() > A::capacity() {
+            return Err(StringError::InsufficientCapacity);
+        }
+        let s = AsciiStr::from_ascii(bytes)?;
         unsafe { Ok(Self::from_bytes(s.as_bytes())) }
     }
 }
 
 impl<A: Array<Item = u8>> AsAsciiStr for FixedAscii<A> {
+    type Inner = u8;
+
+    #[inline]
+    fn slice_ascii<R>(&self, range: R) -> Result<&AsciiStr, AsAsciiStrError>
+    where
+        R: SliceIndex<[u8], Output = [u8]>,
+    {
+        self.as_bytes().slice_ascii(range)
+    }
+
+    #[inline]
+    fn as_ascii_str(&self) -> Result<&AsciiStr, AsAsciiStrError> {
+        AsciiStr::from_ascii(self.as_bytes())
+    }
+
     #[inline]
     unsafe fn as_ascii_str_unchecked(&self) -> &AsciiStr {
         AsciiStr::from_ascii_unchecked(self.as_bytes())
-    }
-
-    fn as_ascii_str(&self) -> ::std::result::Result<&AsciiStr, AsAsciiStrError> {
-        AsciiStr::from_ascii(self.as_bytes())
     }
 }
 
@@ -436,9 +491,9 @@ impl<A: Array<Item = u8>> Clone for FixedUnicode<A> {
     #[inline]
     fn clone(&self) -> Self {
         unsafe {
-            let mut buf: A = mem::uninitialized();
-            ptr::copy_nonoverlapping(self.buf.as_ptr(), buf.as_mut_ptr(), A::capacity());
-            FixedUnicode { buf }
+            let mut buf = mem::MaybeUninit::<A>::uninit();
+            ptr::copy_nonoverlapping(self.buf.as_ptr(), buf.as_mut_ptr() as *mut _, A::capacity());
+            FixedUnicode { buf: buf.assume_init() }
         }
     }
 }
@@ -507,14 +562,14 @@ impl<A> FromStr for FixedUnicode<A>
 where
     A: Array<Item = u8>,
 {
-    type Err = crate::errors::Error;
+    type Err = StringError;
 
-    fn from_str(s: &str) -> Result<Self> {
-        ensure!(
-            s.as_bytes().len() <= A::capacity(),
-            "Insufficient capacity for fixed-size unicode string"
-        );
-        unsafe { Ok(Self::from_bytes(s.as_bytes())) }
+    fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
+        if s.as_bytes().len() <= A::capacity() {
+            unsafe { Ok(Self::from_bytes(s.as_bytes())) }
+        } else {
+            Err(StringError::InsufficientCapacity)
+        }
     }
 }
 
