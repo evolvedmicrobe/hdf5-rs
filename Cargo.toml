@@ -14,8 +14,6 @@ edition = "2018"
 [features]
 default = []
 mpio = ["mpi-sys", "hdf5-sys/mpio"]
-# Use static HDF5 libs downloaded from conda.
-conda = ["libhdf5-lib/conda"]
 
 [workspace]
 members = ["hdf5-types", "hdf5-derive", "hdf5-sys"]
@@ -43,4 +41,5 @@ scopeguard = "1.0"
 tempdir = "0.3"
 
 [build-dependencies]
+hdf5-sys = { path = "hdf5-sys", version = "0.6.0" }  # !V
 hdf5-sys = { path = "hdf5-sys", version = "0.6.0" }  # !V

@@ -17,6 +17,8 @@ mpi-sys = { version = "0.1", optional = true }
 [features]
 default = []
 mpio = ["mpi-sys"]
+# Use static HDF5 libs downloaded from conda.
+conda = ["libhdf5-lib/conda"]
 
 [build-dependencies]
 libloading = "0.5"
